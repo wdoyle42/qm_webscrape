@@ -333,7 +333,7 @@ g7
 
 ```{r}
 ## Great schools API
-key<-"4etddulhsp2qj0wni2zrwgxx"
+
 
 ##http://www.greatschools.org/api/docs/schoolSearch.page
 
