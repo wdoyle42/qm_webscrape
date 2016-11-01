@@ -15,23 +15,51 @@ Many of the tools we'll cover today can be quite powerful ways to interact with 
 
 
 
-```{r echo=FALSE,results='hide',cache=TRUE}
+```{r chunk1,echo=FALSE,results='hide',cache=TRUE}
+# Using R for webscraping, interacting via APIs 
+# Inspired by https://github.com/notesofdabbler
+# Key source: http://notesofdabbler.bitbucket.org/2013_12_censusBlog/censusHomeValueExplore_wdesc.html
+# MASSIVE credit due to authors of Zillow and acs libraries
 # Will Doyle
 # INIT: 10/13/2014
-# REVS:11/11/2016
+# REVS:10/10/2016
 
-
+# Concept: get housing data for Davidson County TN by 
+# by zip codes. Plot and model prices per square foot by
+# education level and income level in zip code. 
 library(tidyverse)
 library(ggplot2)
 library(rvest)
 library(ggthemes)
+library(chron)
+library(lubridate)
 library(acs)
-library(rscorecard)
-library(WDI)
+library(RCurl)
+library(gridExtra)
+library(maptools)
+library(ggmap)
+library(plyr)
+library(ZillowR)
 library(plotly)
-library(httr)
-library(jsonlite)
-library(tidyjson)
+```
+
+
+# Basics of interacting with information stored online
+
+R can understand a web connection via the `url` command. Once that connection is established, we can download whatever we'd like. 
+
+```{r}
+#Web connections: url
+# example
+r_home = url("http://www.r-project.org/")
+r_home
+
+# Pulling text from a website using readlines
+# url of Moby Dick (project Gutenberg)
+moby_url = url("http://www.gutenberg.org/ebooks/2701.txt.utf-8")
+# reading the content (first 500 lines)
+moby_dick = readLines(moby_url, n = 10)
+moby_dick
 ```
 
 
@@ -44,14 +72,36 @@ When we talk about "scraping" a web table, we're talking about pulling a table t
 #example
 # load XML
 # url
-ach_gap="https://en.wikipedia.org/wiki/Achievement_gap_in_the_United_States" 
+marathon_wiki = "https://en.wikipedia.org/wiki/Marathon_world_record_progression"
 
-achieve_gap <- read_html(ach_gap)%>%html_table(fill=TRUE)
+marathon <- read_html(marathon_wiki)%>%html_table()
 
-achieve_gap<-tbl_df(data.frame(achieve_gap[[3]]))
+marathon<-tbl_df(data.frame(marathon[[1]]))
+
+#View(marathon)
+
+#Convert H:M:S to fraction of a day, convert that to seconds
+marathon<-marathon%>%mutate(Time2=hms(as.character(Time)))%>%mutate(Time2=period_to_seconds(Time2))
+
+#Marathons are 42,200 meters long
+marathon$speed<-(4.22e4)/marathon$Time2
+#Get dates in a usable format
+marathon$date<-mdy(marathon$Date)
+```
+
+## Progression of World Record Marathon Speed in Meters/Second
+```{r}
+g1<-ggplot(data=marathon,
+           aes(y=speed,x=marathon$date,color=Nationality)) + 
+           geom_point() +
+           xlab("Date")+
+           ylab("Meters/Second")+
+           theme_igray()
+g1
 
 ```
 
+_Quick Exercise_ Repeat the above analysis for women's world record progression.
 
 # Interacting with more complex websites
 
@@ -62,30 +112,91 @@ Below, I acces some team data from the nfl.com website. To get the table in shap
 ```{r}
 ## Pulling from a "stats" website
 
-my_url<-"https://nces.ed.gov/programs/digest/d15/tables/dt15_203.10.asp?current=yes"
-my_nodes<-paste0(".TblCls010:nth-child(",1,")")
-column<-read_html(my_url)%>%html_nodes(my_nodes)%>%html_text()%>%extract_numeric()
+year_list<-2010:2015
 
-enroll_df<-data.frame(column)
+## Loop through years
 
-for (i in 2:20){
-my_nodes<-paste0(".TblCls011:nth-child(",i,")")
-column<-read_html(my_url)%>%html_nodes(my_nodes)%>%html_text()%>%extract_numeric()
-enroll_df<-tbl_df(data.frame(enroll_df,column[1:33]))
-Sys.sleep(runif(1,0,3))
-}
+nfl_df_all<-NULL
 
-names(enroll_df)<-c("Year",
-                    "All Grades",
-                    "Total Elementary",
-                    "Pre-K",
-                    "K",
-                    paste("Grade",1:8),
-                    "Total HS",
-                    paste("Grade",9:12)
-                    )
+paste0("http://www.basketball-reference.com/leagues/NBA_",year,"_per_game.html")
 
+for (year in year_list){
 
+## Web Page
+
+url<-paste0("http://www.nfl.com/stats/categorystats?tabSeq=2&offensiveStatisticCategory=GAME_STATS&conference=ALL&role=TM&season=",
+            year,
+            "&seasonType=REG&d-447263-s=TOTAL_YARDS_GAME_AVG&d-447263-o=2&d-447263-n=1"
+)
+
+## Get Page
+
+url<-"http://www.basketball-reference.com/leagues/NBA_2016_per_game.html"
+page<-read_html(url)
+
+## We want columns 3:21 from this page
+my_numbers<-3:21
+
+## Get data frame started: fill in team names
+my_nodes<-paste0("td:nth-child(",2,")")
+
+## This code gets the data !
+team_names<-page%>%html_nodes(my_nodes)%>%html_text()
+
+%>%stringr::str_extract("[\\w]+[\\s]+[\\w]+[^/t]")
+
+## Create Data Frame
+nfl_df<-data.frame(team_names)
+
+## Go through each column and add it to a the data frame
+for (i in my_numbers){
+
+## This is the hardest part: figuring out the part of the page we're interested in    
+my_nodes<-paste0("td:nth-child(",i,")")
+
+## Take that part, extract it from the page, change it to text, and take just numbers
+node_list<-page%>%html_nodes(my_nodes)%>%html_text()%>%stringr::str_extract_all("\\d+", simplify = TRUE)
+
+## Add that column to the data frame
+nfl_df<-data.frame(nfl_df,node_list)
+
+## Add year
+nfl_df$year<-year
+}# End column loop
+
+## Wait between 1 and 5 seconds before going back for next season (being polite)
+nfl_df_all<-rbind(nfl_df_all,nfl_df)
+  
+Sys.sleep(runif(1,1,5))
+}#end year loop
+
+names(nfl_df_all)<-c("team",
+                     "games_played",
+                     "year",
+                     "pts_game",
+                     "total_pts",
+                     "yds_game",
+                     "yds_p",
+                     "first_game",
+                     "third_made",
+                     "third_attempt",
+                     "fourth_made",
+                     "fourth_attempt",
+                     "fourth_percent",
+                     "penalites",
+                     "penalty_yards",
+                     "time_of_poss",
+                     "fum",
+                     "lost",
+                     "to")
+```
+
+## Points Scored as a Function of Yards per Game, all NFL Teams, 2010-2015
+```{r}
+gg<-ggplot(nfl_df_all,aes(x=yds_game,y=pts_game,text=paste(team,year),color=team))
+gg<-gg+geom_point()
+gg<-gg+theme(legend.position="none")
+ggplotly(gg)
 ```
 
 
@@ -125,8 +236,6 @@ Next, we'll turn to the American Community Survey. This includes a large number 
 #List of tables: http://www2.census.gov/acs2011_3yr/summaryfile/ACS_2009-2011_SF_Tech_Doc.pdf
 # b15002: education of pop over 25, by sex 
 # b19001: household income over last 12 months
-
-acs_key <- '8ce5d8b715dd18c965219663f9070077996b5426'
 
 if (file.exists("dav.RData")==FALSE){
   
@@ -327,24 +436,6 @@ g6
 #Combine bar plot and map
 g7<-arrangeGrob(g5,g6,ncol=2)
 g7
-
-```
-
-
-```{r}
-## Great schools API
-key<-"4etddulhsp2qj0wni2zrwgxx"
-
-##http://www.greatschools.org/api/docs/schoolSearch.page
-
-request<-paste0("http://api.greatschools.org/search/schools?key=",key,"&state=TN&q=Nashville&levelCode=elementary-schools")
-
-gs_data<-GET(request)
-
-school_list<-content(gs_data)
-
-dfs <- lapply(school_list$schools$school, data.frame ,stringsAsFactors = FALSE)
-
 
 ```
 
