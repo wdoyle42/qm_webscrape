@@ -1,0 +1,353 @@
+---
+title: "Web Scraping in R"
+author: "Will Doyle"
+date: "November 1, 2016"
+output: github_document
+---
+
+## Introduction
+
+Many large web sites host a huge amount of information. This information is encoded and delivered on demand to the user within a web page, which is really just a markup language that a browser can understand. We can take this data and analyze it using R, via a variety of different means. Today we'll cover scraping web tables and interacting via Automated Programming Interfaces.
+
+## Ethics and Responsiblity
+
+Many of the tools we'll cover today can be quite powerful ways to interact with data stored online and gather it for analysis. Because they're powerful, you need to be careful with them. In particular, try not to request information in a way that will burden the website owners. What constitutes a burden depends on the website. Google, Twitter, Facebook, all of the big websites have protections in place to guard against too many requests and have a huge amount of capacity for taking the requests they grant. Smaller websites may not have either. Always strive to be minimally intrusive: you're usually getting this data for free. 
+
+
+
+```{r echo=FALSE,results='hide',cache=TRUE}
+# Will Doyle
+# INIT: 10/13/2014
+# REVS:11/11/2016
+
+
+library(tidyverse)
+library(ggplot2)
+library(rvest)
+library(ggthemes)
+library(acs)
+library(rscorecard)
+library(WDI)
+library(plotly)
+library(httr)
+library(jsonlite)
+library(tidyjson)
+```
+
+
+# Scraping web tables
+
+When we talk about "scraping" a web table, we're talking about pulling a table that exists on a website and turning it into a usable data frame for analysis. Below, I take the table from  `http://en.wikipedia.org/wiki/Marathon_world_record_progression` for men and plot the change in speed in m/s as a function of the date that the world record was set. 
+
+```{r}
+#Scraping web tables
+#example
+# load XML
+# url
+ach_gap="https://en.wikipedia.org/wiki/Achievement_gap_in_the_United_States" 
+
+achieve_gap <- read_html(ach_gap)%>%html_table(fill=TRUE)
+
+achieve_gap<-tbl_df(data.frame(achieve_gap[[3]]))
+
+```
+
+
+# Interacting with more complex websites
+
+To get data from a more complex site will take several steps. First, you need to figure out the strucutre for the url naming. Then you need to use something like [selector gadget](http://selectorgadget.com/) to access the data. We'll go over this in class. 
+
+Below, I acces some team data from the nfl.com website. To get the table in shape, I needed to figure out the "node" associate with each column. This took some time. It turns out that each column in the table `td` is named `nth-child(#)` where `#` is a number from 3-21. 
+
+```{r}
+## Pulling from a "stats" website
+
+my_url<-"https://nces.ed.gov/programs/digest/d15/tables/dt15_203.10.asp?current=yes"
+my_nodes<-paste0(".TblCls010:nth-child(",1,")")
+column<-read_html(my_url)%>%html_nodes(my_nodes)%>%html_text()%>%extract_numeric()
+
+enroll_df<-data.frame(column)
+
+for (i in 2:20){
+my_nodes<-paste0(".TblCls011:nth-child(",i,")")
+column<-read_html(my_url)%>%html_nodes(my_nodes)%>%html_text()%>%extract_numeric()
+enroll_df<-tbl_df(data.frame(enroll_df,column[1:33]))
+Sys.sleep(runif(1,0,3))
+}
+
+names(enroll_df)<-c("Year",
+                    "All Grades",
+                    "Total Elementary",
+                    "Pre-K",
+                    "K",
+                    paste("Grade",1:8),
+                    "Total HS",
+                    paste("Grade",9:12)
+                    )
+
+
+```
+
+
+# Interacting via APIs
+
+Many websites have created Application Programming Interfaces, which allow the user to directly communicate with the website's underlying database without dealing with the intermediary web content. These have been expanding rapdily and are one of the most exciting areas of development in data access for data science. 
+
+Today, we'll be working with three APIs: google maps, Zillow and the American Community Survey from the census. Please go to: `http://www.census.gov/developers/` and click on "Get a Key" to get your census key. Similarly, go to: `http://www.zillow.com/howto/api/APIOverview.htm` to get your key from Zillow. 
+
+*YOU NEED TO PAY ATTENTION TO TERMS OF USE WHEN USING APIS. DO NOT VIOLATE THESE.*
+
+With these keys in hand, we can interact with these various databases. Today, we're going to take a look at home prices as a function of income and education level for all of the zip codes in Davidson County TN. 
+
+The first step is to create a list of all zip codes in Davidson County. We can do this by using another dataset that includes a comprehensive listing of zip codes by county and city. 
+
+```{r}
+#get list of all zip codes in davidson county
+
+load("zipCityCountyStateMap.Rda")
+names(zipMap2)<-c("state","county","zip","city_name","countyname","statename")
+
+ziplist<-zipMap2$zip[zipMap2$countyname=="Davidson County, TN"]
+citylist<-zipMap2$city_name[zipMap2$countyname=="Davidson County, TN"]
+
+city.zip<-data.frame(ziplist,citylist)
+names(city.zip)<-c("zip","city")
+```
+
+Next, we'll turn to the American Community Survey. This includes a large number of tables (available `http://www2.census.gov/acs2011_3yr/summaryfile/ACS_2009-2011_SF_Tech_Doc.pdf`) that cover many demographic and other characteristics of the population, down to the level of zip codes. We'll use the acs package to get two tables for the zip codes we're interested in: levels of education and income. We'll turn these tables into two variables: the proportion of the population with incomes above $75,000, and the proportion of the population with at least a bachelor's degree. 
+
+```{r}
+
+
+#key<-"<your_key_here>"
+
+
+#List of tables: http://www2.census.gov/acs2011_3yr/summaryfile/ACS_2009-2011_SF_Tech_Doc.pdf
+# b15002: education of pop over 25, by sex 
+# b19001: household income over last 12 months
+
+if (file.exists("dav.RData")==FALSE){
+  
+api.key.install(acs_key, file = "key.rda")
+  
+davidson.zip<-geo.make(zip.cod=ziplist)
+
+davidson.educ=acs.fetch(geography=davidson.zip,
+                        endyear=2014,
+                  table.number="B15002", col.names="pretty")
+
+acs.colnames(davidson.educ)
+
+prop.coll.above<-divide.acs(numerator=(davidson.educ[,15]+
+                                      davidson.educ[,16]+
+                                      davidson.educ[,17]+
+                                      davidson.educ[,18]+
+                                      davidson.educ[,32]+
+                                      davidson.educ[,33]+
+                                      davidson.educ[,34]+
+                                      davidson.educ[,35]),
+                            denominator=davidson.educ[,1]
+)
+                            
+          
+davidson.inc<-acs.fetch(geography=davidson.zip, 
+                        endyear = 2014,
+                        table.number="B19001", col.names="pretty")
+
+acs.colnames(davidson.inc)
+
+prop.above.75<-divide.acs(numerator=(davidson.inc[,13]+
+                            davidson.inc[,14]+
+                            davidson.inc[,15]+
+                            davidson.inc[,16]+
+                            davidson.inc[,17]),
+                          denominator=davidson.inc[,1]
+                          )
+                          
+
+dav.df<-data.frame(substr(geography(davidson.educ)[[1]],7,11),
+                       as.numeric(estimate(prop.coll.above)),
+                       as.numeric(estimate(prop.above.75))
+)
+
+names(dav.df)<-c("zip","college.educ","income75")
+save(dav.df,file="dav.RData")
+}else{
+  load("dav.RData")
+}
+#View(dav.df)
+```
+
+_Quick Exercise_ Pull table B23001 "Sex by Age by Employment Status for the Population 16 and over" from ACS. 
+
+Now, we'll turn to the Zillow API. Using the Zillow library, we'll interact with this API to get average levels of home prices and price per square foot in these zip codes. Notice that I don't download any  dataset if it already exists: this avoids getting too many calls to Zillow-- they won't take more than 1,000 a day (which actually isn't a lot).
+
+```{r}
+zwsid<-"X1-ZWz1dxjepsdq17_6sext"
+
+# List of zips for which XML file with Zillow demographic data is to be extracted
+# Add in file.exists thing here, talk about avoiding unnecessary calls to exernal
+
+if (file.exists("zdemodata.RData")==FALSE){
+zdemodata=list(zip=character(),medListPrice=numeric(),medValSqFt=numeric())
+
+for (i in 1:length(ziplist)) {
+  url=paste("http://www.zillow.com/webservice/GetDemographics.htm?zws-id=",zwsid,"&zip=",ziplist[i],sep="")
+  x=xmlInternalTreeParse(url)
+  zdemodata$zip[i]=ziplist[i]
+  x2=xpathApply(x,"//table[name = 'Affordability Data']/data/attribute[name = 'Median List Price']/values/zip/value",xmlValue)
+  zdemodata$medListPrice[i]=x2[[1]][1]
+  x3=xpathApply(x,"//table[name = 'Affordability Data']/data/attribute[name = 'Median Value Per Sq Ft']/values/zip/value",xmlValue)
+  zdemodata$medValSqFt[i]=x3[[1]][1]
+}
+
+zdemodata2=data.frame(zdemodata,stringsAsFactors=FALSE)
+zdemodata2$medListPrice=as.numeric(zdemodata2$medListPrice)
+zdemodata2$medValSqFt=as.numeric(zdemodata2$medValSqFt)
+save(zdemodata2,file="zdemodata.RData")
+}else{
+  load("zdemodata.RData")
+}
+
+head(zdemodata2)
+```
+
+Now we merge these two datasets by zip code:
+```{r}
+#Merge two datasets
+dav.house.df<-left_join(zdemodata2,dav.df,by="zip")
+
+dav.house.df<-left_join(dav.house.df,city.zip,by="zip")
+```
+
+
+We can run a regression predicting value per square foot by income and education:
+
+```{r}
+
+#Predict square footage by income and education
+mod1<-lm(medValSqFt~college.educ+income75,data=dav.house.df);summary(mod1)
+
+```
+
+_Quick Exercise_ Predict total home price by the same factors. 
+
+We can also create a scatterplot that shows median value per square foot as a function of education. 
+
+## Home Prices in Davidson County, TN by Education Level
+```{r}
+#Plot
+g2<-ggplot(data=dav.house.df[dav.house.df$medListPrice>0,],
+           aes(x=college.educ,y=medValSqFt))
+g2<-g2+geom_point()
+g2<-g2+xlab("Proportion of Population With a College Degree")+ylab("Median Value per Square Foot")
+g2<-g2+geom_smooth(method=lm)
+g2<-g2+theme_igray()
+g2
+```
+
+_Quick Exercise_ Create a scatterplot with income as the x variable. 
+
+# Mapping
+
+The last set of code maps these zip codes. I have a file that shows the "shape" of the zip codes in Davidson county. Using the `get_googlemap` function, we'll pull a google map centered on Davidson county. I then overlay the zip codes on top of the google map, then fill these in using the level of income. 
+
+```{r}
+#Just because: mapping this 
+
+load("davidson_zipshp.RData")
+
+davidson.zipshp$zip<-davidson.zipshp$id
+
+davidson.map<-join(dav.house.df,davidson.zipshp)
+
+address="Davidson County, TN"
+
+#Pull Map from Google Maps
+dav.gmap=get_googlemap(center=address,maptype=c("roadmap"),zoom=10,color="bw")
+```
+
+## Income by Zip Code in Davidson County, TN
+```{r}
+#Plot Income by Zip Code
+g3<-ggmap(dav.gmap)
+g3<-g3+geom_polygon(data=davidson.map[davidson.map$medValSqFt>0,],aes(x=long,y=lat,group=zip,
+                                       fill=income75),
+                 color="black",alpha=0.5)
+g3=g3+scale_fill_gradient(low="blue",high="red",guide="colourbar")
+g3=g3+labs(title="Proportion of Pop With Income 75+ by Zip Code (US Census data)")
+g3=g3+theme(legend.title=element_blank(),plot.title=element_text(face="bold"))
+print(g3)
+```
+
+Next I repeat the above by education and value per square foot. 
+
+## Proportion of Population with a College Degree, Davidson County, TN
+```{r}
+#Plot Education by Zip Code
+g4=ggmap(dav.gmap)
+g4=g4+geom_polygon(data=davidson.map,aes(x=long,y=lat,group=zip,
+                                         fill=college.educ),
+                   color="black",alpha=0.5)
+g4=g4+scale_fill_gradient(low="blue",high="red",guide="colourbar")
+g4=g4+labs(title="Proportion of Pop With College Degree by Zip Code (US Census data)")
+g4=g4+theme(legend.title=element_blank(),plot.title=element_text(face="bold"))
+print(g4)
+
+#Plot Value per Square Foot by Zip Code
+g5<-ggmap(dav.gmap)
+g5<-g5+geom_polygon(data=davidson.map[davidson.map$medValSqFt>0,],aes(x=long,y=lat,group=zip,
+                                         fill=medValSqFt),
+                   color="black",alpha=0.5)
+g5=g5+scale_fill_gradient(low="blue",high="red",guide="colourbar")
+g5=g5+labs(title="Median Value per Square Foot (Zillow Data)")
+g5=g5+theme(legend.title=element_blank(),plot.title=element_text(face="bold"))
+print(g5)
+```
+
+Last, I create a barplot that shows value per square foot, ordered according to the highest to lowest median values. This plot is combined with the map to provide more information. 
+
+```{r}
+#Need to order zip codes for barplot
+dav.house.df$zipfactor<-factor(as.character(dav.house.df$zip))
+dav.house.df$zipfactor<-reorder(dav.house.df$zipfactor,dav.house.df$medValSqFt)
+
+#Bar plot of value by zip code
+g6<-ggplot(data=dav.house.df[dav.house.df$medValSqFt>0,],
+           aes(x=zipfactor,y=medValSqFt,fill=medValSqFt))
+
+g6=g6+scale_fill_gradient(low="blue",high="red")
+g6<-g6+geom_bar(stat="identity")+coord_flip()
+g6<-g6+xlab("")+ylab("Median Value per Square Foot")
+g6<-g6+theme_igray()
+g6
+
+#Combine bar plot and map
+g7<-arrangeGrob(g5,g6,ncol=2)
+g7
+
+```
+
+
+```{r}
+## Great schools API
+key<-"4etddulhsp2qj0wni2zrwgxx"
+
+##http://www.greatschools.org/api/docs/schoolSearch.page
+
+request<-paste0("http://api.greatschools.org/search/schools?key=",key,"&state=TN&q=Nashville&levelCode=elementary-schools")
+
+gs_data<-GET(request)
+
+school_list<-content(gs_data)
+
+dfs <- lapply(school_list$schools$school, data.frame ,stringsAsFactors = FALSE)
+
+dfs<-lapply(dfs,as.character)
+
+dfs<-lapply(dfs,data.frame)
+
+gs_data<-bind_rows(dfs)
+
+```
+
